@@ -1,0 +1,58 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - uses: actions/setup-java@v4
+        with: {distribution: temurin, java-version: 17}
+      - name: Check signing key
+        run: |
+          if [ ! -f debug.keystore ]; then echo "::error::debug.keystore не найден в корне репозитория. Без него обновление ставится с конфликтом пакетов."; exit 1; fi
+      - name: Prepare
+        run: |
+          mkdir -p www
+          F=$(find . -name index.html -not -path './node_modules/*' -not -path './www/*' -not -path './android/*' | head -1)
+          if [ -z "$F" ]; then echo "::error::index.html не найден в репозитории."; exit 1; fi
+          echo "Беру $F"; cp "$F" www/index.html
+          npm init -y
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6
+          echo '{"appId":"app.vitok.habits","appName":"Vitok","webDir":"www","backgroundColor":"#0d1412"}' > capacitor.config.json
+      - run: npx cap add android
+      - name: Version
+        run: |
+          V=$(cat VERSION | tr -d '[:space:]')
+          G=android/app/build.gradle
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/" $G
+          sed -i -E "s/versionName \"[^\"]*\"/versionName \"$V\"/" $G
+          grep -E "versionCode|versionName" $G
+      - name: Icon
+        run: |
+          R=android/app/src/main/res
+          for d in mdpi hdpi xhdpi xxhdpi xxxhdpi; do
+            cp icons/ic_launcher_$d.png $R/mipmap-$d/ic_launcher.png
+            cp icons/ic_launcher_$d.png $R/mipmap-$d/ic_launcher_round.png
+            cp icons/ic_launcher_foreground_$d.png $R/mipmap-$d/ic_launcher_foreground.png
+          done
+          sed -i 's|<color name="ic_launcher_background">[^<]*</color>|<color name="ic_launcher_background">#0d1412</color>|' $R/values/ic_launcher_background.xml 2>/dev/null || true
+      - name: Notification permission
+        run: sed -i 's|</manifest>|<uses-permission android:name="android.permission.POST_NOTIFICATIONS"/></manifest>|' android/app/src/main/AndroidManifest.xml
+      - name: Cutout and bars
+        run: |
+          S=android/app/src/main/res/values/styles.xml
+          sed -i 's|<item name="android:background">@null</item>|&<item name="android:statusBarColor">#0d1412</item><item name="android:navigationBarColor">#0d1412</item><item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>|' $S
+          sed -i 's|<item name="android:background">@drawable/splash</item>|&<item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>|' $S
+          grep -q windowLayoutInDisplayCutoutMode $S || { echo "styles.xml was not patched"; cat $S; exit 1; }
+      - run: npx cap sync android
+      - name: Fixed signing key
+        run: mkdir -p ~/.android && cp debug.keystore ~/.android/debug.keystore
+      - name: Show signing key fingerprint
+        run: keytool -list -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey | grep SHA1
+      - run: cd android && chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vitok-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
