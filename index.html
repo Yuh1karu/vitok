@@ -1059,7 +1059,7 @@ let BN;
 const accs=()=>{try{return JSON.parse(localStorage.getItem(ACC))||[]}catch(e){return[]}};
 const accPut=a=>{try{localStorage.setItem(ACC,JSON.stringify(a))}catch(e){}};
 const bgCss=v=>!v?BG[0]:(v.indexOf('grad:')===0?(BG[+v.slice(5)]||BG[0]):"url('"+v+"') center/cover");
-window.VBG={BG,bgCss};window.VBN={get:()=>BN,set:v=>{BN=v}};
+window.VBG={BG,bgCss};window.VBN={get:()=>BN,set:v=>{BN=v}};window.VACC=()=>accs();
 function accRemember(){if(!CL.uid||!CL.token)return;const a=accs().filter(x=>x.uid!==CL.uid);a.push({uid:CL.uid,email:CL.email,token:CL.token,refresh:CL.refresh,me:CL.me,url:CL.url,key:CL.key});accPut(a);try{localStorage.setItem('vitok-data-'+CL.uid,JSON.stringify(S))}catch(e){}}
 function accSwitch(uid){accRemember();const t=accs().find(x=>x.uid===uid);if(!t)return;Object.assign(CL,{token:t.token,refresh:t.refresh,uid:t.uid,email:t.email,me:t.me,url:t.url,key:t.key});clSave();try{const d=localStorage.getItem('vitok-data-'+uid);if(d)localStorage.setItem(K,d);else localStorage.removeItem(K)}catch(e){}location.reload()}
 function accAddNew(){accRemember();Object.assign(CL,{token:null,refresh:null,uid:null,me:null});clSave();try{localStorage.removeItem(K)}catch(e){}location.reload()}
@@ -1147,6 +1147,7 @@ document.addEventListener('change',e=>{if(e.target.id!='bfile')return;const f=e.
 <script>
 (function(){
 const BG=VBG.BG,bgCss=VBG.bgCss;
+const accs=()=>VACC();
 const ctKey=()=>'vitok-ct-'+(CL.uid||'x');
 const ctGet=()=>{try{return JSON.parse(localStorage.getItem(ctKey()))||[]}catch(e){return[]}};
 const ctPut=l=>{try{localStorage.setItem(ctKey(),JSON.stringify(l))}catch(e){}};
