@@ -1,12 +1,11 @@
 # Репозиторий: index.html, VERSION, папки native/ и icon/ и этот файл.
 # Ключ подписи хранится в GitHub Secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS), в репозитории его НЕТ.
-# Каждый push -> собирается APK -> публикуется GitHub Release "build-N".
+# Сборка запускается только вручную (Actions -> Build APK -> Run workflow) -> собирается APK -> публикуется GitHub Release "build-N".
 # Приложение само находит новый релиз и предлагает обновиться.
 name: Build APK
 
 on:
-  push:
-  workflow_dispatch:
+  workflow_dispatch:   # только по кнопке Run workflow
 
 permissions:
   contents: write
