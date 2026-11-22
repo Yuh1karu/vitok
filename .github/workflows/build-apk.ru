@@ -1,0 +1,137 @@
+# Репозиторий: index.html, debug.keystore, VERSION, папка native/ и этот файл.
+# Каждый push -> собирается APK -> публикуется GitHub Release "build-N".
+# Приложение само находит новый релиз и предлагает обновиться.
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  APP_ID: com.vitok.app   # НЕ МЕНЯТЬ: тот же id, что в установленном APK
+  APP_NAME: Виток
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Номер сборки
+        run: |
+          echo "BUILD=$((100 + GITHUB_RUN_NUMBER))" >> $GITHUB_ENV
+          echo "VER=$(tr -d '[:space:]' < VERSION)" >> $GITHUB_ENV
+
+      - name: Вписать версию в приложение
+        run: |
+          python3 - <<'PY'
+          import os,re
+          t=open('index.html',encoding='utf-8').read()
+          info='/*BUILD_INFO*/window.VITOK_BUILD=%s;window.VITOK_REPO="%s";window.VITOK_VER="%s";/*END_BUILD_INFO*/'%(os.environ['BUILD'],os.environ['GITHUB_REPOSITORY'],os.environ['VER'])
+          t,n=re.subn(r'/\*BUILD_INFO\*/.*?/\*END_BUILD_INFO\*/',info,t,flags=re.S)
+          assert n==1
+          open('index.html','w',encoding='utf-8').write(t)
+          PY
+
+      - name: Создать проект Capacitor
+        run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6
+          mkdir www
+          cp index.html www/index.html
+          npx cap init "$APP_NAME" "$APP_ID" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Нативная часть (обновление, разрешения)
+        run: |
+          python3 - <<'PY'
+          import os,re
+          app=os.environ['APP_ID']; build=os.environ['BUILD']; ver=os.environ['VER']
+          # Java-классы
+          d='android/app/src/main/java/'+app.replace('.','/')
+          os.makedirs(d,exist_ok=True)
+          for f in ('MainActivity.java','VitokUpdater.java'):
+              s=open('native/'+f,encoding='utf-8').read().replace('__APP_ID__',app)
+              open(d+'/'+f,'w',encoding='utf-8').write(s)
+          # FileProvider paths
+          x='android/app/src/main/res/xml'
+          os.makedirs(x,exist_ok=True)
+          open(x+'/file_paths.xml','w').write(open('native/file_paths.xml').read())
+          # Иконки приложения и иконка уведомлений
+          import shutil
+          shutil.copytree('native/res','android/app/src/main/res',dirs_exist_ok=True)
+          # Разрешения
+          mp='android/app/src/main/AndroidManifest.xml'
+          m=open(mp,encoding='utf-8').read()
+          perms='''
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+              <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+          '''
+          assert '<application' in m
+          m=m.replace('<application',perms+'<application',1)
+          open(mp,'w',encoding='utf-8').write(m)
+          # Версия: растёт с каждой сборкой, поэтому обновление встаёт поверх старого
+          gp='android/app/build.gradle'
+          g=open(gp,encoding='utf-8').read()
+          g,n1=re.subn(r'versionCode\s+\d+','versionCode '+build,g)
+          g,n2=re.subn(r'versionName\s+"[^"]*"','versionName "%s"'%ver,g)
+          assert n1==1 and n2==1
+          # Release-сборка (не debuggable) с тем же ключом, что и раньше: подпись не меняется
+          sc="""    signingConfigs {
+              vitok {
+                  storeFile rootProject.file('../debug.keystore')
+                  storePassword 'android'
+                  keyAlias 'androiddebugkey'
+                  keyPassword 'android'
+              }
+          }
+          buildTypes {"""
+          assert g.count('buildTypes {')==1
+          g=g.replace('buildTypes {',sc,1)
+          assert g.count('release {')==1
+          g=g.replace('release {','release {\n            signingConfig signingConfigs.vitok\n            debuggable false',1)
+          open(gp,'w',encoding='utf-8').write(g)
+          PY
+
+      - name: Собрать APK (release, подпись debug.keystore)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Переименовать APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk Vitok.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vitok-apk
+          path: Vitok.apk
+
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD }}
+          name: Виток ${{ env.VER }} (сборка ${{ env.BUILD }})
+          body: ${{ github.event.head_commit.message }}
+          files: Vitok.apk
+          make_latest: true
