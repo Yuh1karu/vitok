@@ -1,7 +1,3 @@
-# Репозиторий: index.html, VERSION, папки native/ и icon/ и этот файл.
-# Ключ подписи хранится в GitHub Secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS), в репозитории его НЕТ.
-# Сборка запускается только вручную (Actions -> Build APK -> Run workflow) -> собирается APK -> публикуется GitHub Release "build-N".
-# Приложение само находит новый релиз и предлагает обновиться.
 name: Build APK
 
 on:
@@ -31,7 +27,7 @@ jobs:
 
       - name: Номер сборки
         run: |
-          echo "BUILD=$((100 + GITHUB_RUN_NUMBER))" >> $GITHUB_ENV
+          echo "BUILD=$((1000 + GITHUB_RUN_NUMBER))" >> $GITHUB_ENV
           echo "VER=$(tr -d '[:space:]' < VERSION)" >> $GITHUB_ENV
 
       - name: Вписать версию в приложение
@@ -75,7 +71,7 @@ jobs:
           # Java-классы
           d='android/app/src/main/java/'+app.replace('.','/')
           os.makedirs(d,exist_ok=True)
-          for f in ('MainActivity.java','VitokUpdater.java'):
+          for f in ('MainActivity.java','VitokUpdater.java','VitokWidget.java'):
               s=open('native/'+f,encoding='utf-8').read().replace('__APP_ID__',app)
               open(d+'/'+f,'w',encoding='utf-8').write(s)
           # FileProvider paths
@@ -98,9 +94,15 @@ jobs:
               <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
               <uses-permission android:name="android.permission.VIBRATE"/>
               <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions"/>
+              <queries><intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent></queries>
           '''
+          if 'xmlns:tools' not in m: m=m.replace('<manifest ','<manifest xmlns:tools="http://schemas.android.com/tools" ',1)
           assert '<application' in m
           m=m.replace('<application',perms+'<application',1)
+          rcv='''<receiver android:name=".VitokWidget" android:exported="true"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/vitok_widget_info"/></receiver>'''
+          assert '</application>' in m
+          m=m.replace('</application>',rcv+'</application>',1)
           open(mp,'w',encoding='utf-8').write(m)
           # Версия: растёт с каждой сборкой, поэтому обновление встаёт поверх старого
           gp='android/app/build.gradle'
@@ -143,7 +145,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ env.BUILD }}
-          name: Виток ${{ env.VER }} (сборка ${{ env.BUILD }})
+          name: Виток v${{ env.VER }}
           body: ${{ github.event.head_commit.message }}
           files: Vitok.apk
           make_latest: true
