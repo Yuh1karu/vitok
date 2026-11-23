@@ -1,0 +1,155 @@
+# Репозиторий: index.html, VERSION, папки native/ и icon/ и этот файл.
+# Ключ подписи хранится в GitHub Secrets (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS), в репозитории его НЕТ.
+# Сборка запускается только вручную (Actions -> Build APK -> Run workflow) -> собирается APK -> публикуется GitHub Release "build-N".
+# Приложение само находит новый релиз и предлагает обновиться.
+name: Build APK
+
+on:
+  workflow_dispatch:   # только по кнопке Run workflow
+
+permissions:
+  contents: write
+
+env:
+  APP_ID: com.vitok.app   # НЕ МЕНЯТЬ: тот же id, что в установленном APK
+  APP_NAME: Виток
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Номер сборки
+        run: |
+          echo "BUILD=$((1000 + GITHUB_RUN_NUMBER))" >> $GITHUB_ENV
+          echo "VER=$(tr -d '[:space:]' < VERSION)" >> $GITHUB_ENV
+
+      - name: Вписать версию в приложение
+        run: |
+          python3 - <<'PY'
+          import os,re
+          t=open('index.html',encoding='utf-8').read()
+          info='/*BUILD_INFO*/window.VITOK_BUILD=%s;window.VITOK_REPO="%s";window.VITOK_VER="%s";/*END_BUILD_INFO*/'%(os.environ['BUILD'],os.environ['GITHUB_REPOSITORY'],os.environ['VER'])
+          t,n=re.subn(r'/\*BUILD_INFO\*/.*?/\*END_BUILD_INFO\*/',info,t,flags=re.S)
+          assert n==1
+          open('index.html','w',encoding='utf-8').write(t)
+          PY
+
+      - name: Создать проект Capacitor
+        run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6
+          mkdir www
+          cp index.html www/index.html
+          npx cap init "$APP_NAME" "$APP_ID" --web-dir www
+          npx cap add android
+          npx cap sync android
+
+      - name: Ключ подписи (из секретов GitHub)
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS_S: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_ALIAS_S: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ -z "$KS_B64" ]; then echo "::error::Нет секрета KEYSTORE_BASE64. Settings -> Secrets and variables -> Actions"; exit 1; fi
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KS_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "KS_PASS=$KS_PASS_S" >> "$GITHUB_ENV"
+          echo "KS_ALIAS=$KS_ALIAS_S" >> "$GITHUB_ENV"
+
+      - name: Нативная часть (обновление, разрешения)
+        run: |
+          python3 - <<'PY'
+          import os,re
+          app=os.environ['APP_ID']; build=os.environ['BUILD']; ver=os.environ['VER']
+          # Java-классы
+          d='android/app/src/main/java/'+app.replace('.','/')
+          os.makedirs(d,exist_ok=True)
+          for f in ('MainActivity.java','VitokUpdater.java','VitokWidget.java'):
+              s=open('native/'+f,encoding='utf-8').read().replace('__APP_ID__',app)
+              open(d+'/'+f,'w',encoding='utf-8').write(s)
+          # FileProvider paths
+          x='android/app/src/main/res/xml'
+          os.makedirs(x,exist_ok=True)
+          open(x+'/file_paths.xml','w').write(open('native/file_paths.xml').read())
+          # Иконки приложения и иконка уведомлений
+          import shutil
+          shutil.copytree('native/res','android/app/src/main/res',dirs_exist_ok=True)
+          # Разрешения
+          mp='android/app/src/main/AndroidManifest.xml'
+          m=open(mp,encoding='utf-8').read()
+          perms='''
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+              <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+              <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" tools:ignore="ProtectedPermissions"/>
+              <queries><intent><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent></queries>
+          '''
+          if 'xmlns:tools' not in m: m=m.replace('<manifest ','<manifest xmlns:tools="http://schemas.android.com/tools" ',1)
+          assert '<application' in m
+          m=m.replace('<application',perms+'<application',1)
+          rcv='''<receiver android:name=".VitokWidget" android:exported="true"><intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter><meta-data android:name="android.appwidget.provider" android:resource="@xml/vitok_widget_info"/></receiver>'''
+          assert '</application>' in m
+          m=m.replace('</application>',rcv+'</application>',1)
+          open(mp,'w',encoding='utf-8').write(m)
+          # Версия: растёт с каждой сборкой, поэтому обновление встаёт поверх старого
+          gp='android/app/build.gradle'
+          g=open(gp,encoding='utf-8').read()
+          g,n1=re.subn(r'versionCode\s+\d+','versionCode '+build,g)
+          g,n2=re.subn(r'versionName\s+"[^"]*"','versionName "%s"'%ver,g)
+          assert n1==1 and n2==1
+          # Release-сборка (не debuggable), подпись ключом из секретов
+          sc="""    signingConfigs {
+              vitok {
+                  storeFile file(System.getenv('KS_FILE'))
+                  storePassword System.getenv('KS_PASS')
+                  keyAlias System.getenv('KS_ALIAS')
+                  keyPassword System.getenv('KS_PASS')
+              }
+          }
+          buildTypes {"""
+          assert g.count('buildTypes {')==1
+          g=g.replace('buildTypes {',sc,1)
+          assert g.count('release {')==1
+          g=g.replace('release {','release {\n            signingConfig signingConfigs.vitok\n            debuggable false',1)
+          open(gp,'w',encoding='utf-8').write(g)
+          PY
+
+      - name: Собрать APK (release)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Переименовать APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk Vitok.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vitok-apk
+          path: Vitok.apk
+
+      - name: Опубликовать релиз
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ env.BUILD }}
+          name: Виток v${{ env.VER }}
+          body: ${{ github.event.head_commit.message }}
+          files: Vitok.apk
+          make_latest: true
